@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Solar System Simulation</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    #canvas { display: block; }
+    #info { position: absolute; top: 10px; left: 10px; color: #fff; font-family: sans-serif; }
+    #tooltip { position: absolute; pointer-events: none; padding: 2px 4px; background: rgba(0,0,0,0.7); color: #fff; font-size: 12px; border-radius: 3px; display: none; z-index: 10; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="info">Click and drag to launch an asteroid</div>
+  <div id="controls" style="position:absolute; top:40px; left:10px; color:#fff; font-family:sans-serif; background: rgba(255,255,255,0.15); padding:8px; border-radius:4px;">
+    <label for="massSlider">Asteroid mass: <span id="massValue">1e12</span> kg</label><br>
+    <input type="range" id="massSlider" min="5" max="23" step="0.1" value="12" style="width:200px;"><br>
+    <label for="zoomSlider">Zoom (m/pixel): <span id="zoomValue">1e9</span></label><br>
+    <input type="range" id="zoomSlider" min="7" max="13" step="0.1" value="9" style="width:200px;"><br>
+    <label for="planetGSlider">Planet gravity factor: <span id="planetGValue">1.0</span>x</label><br>
+    <input type="range" id="planetGSlider" min="0" max="100" step="0.1" value="1" style="width:200px;"><br>
+    <label for="velocitySlider">Initial velocity: <span id="velocityValue">100%</span></label><br>
+    <input type="range" id="velocitySlider" min="0" max="200" step="1" value="100" style="width:200px;"><br>
+    <label for="sunScaleCheckbox"><input type="checkbox" id="sunScaleCheckbox"> Sun to-scale</label><br>
+    <div>Score: <span id="scoreValue">0</span></div>
+  </div>
+  <div id="tooltip"></div>
+  <script>
+    // Constants
+    const G = 6.674e-11; // gravitational constant
+    let scale = 1e9; // meters per pixel (dynamic via zoom slider)
+    const velocityScale = 5e3; // meters per second per pixel of drag
+    const dt = 60 * 60 * 6; // time step: 6 hours per frame
+
+    // Canvas setup
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let width, height, cx, cy;
+    function resize() {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = width;
+      canvas.height = height;
+      cx = width / 2;
+      cy = height / 2;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Body constructor
+    class Body {
+      constructor(mass, x, y, vx, vy, radius, color) {
+        this.mass = mass;
+        this.x = x; this.y = y;
+        this.vx = vx; this.vy = vy;
+        this.radius = radius;
+        this.color = color;
+      }
+    }
+
+    // Create sun and planets
+    const sun = new Body(
+      1.988e30,
+      0, 0,
+      0, 0,
+      30, '#ffcc00'
+    );
+    // Sun physical radius for to-scale display (m)
+    sun.realRadius = 6.957e8;
+    const planets = [];
+    /**
+     * Add a planet to the simulation.
+     * @param name        unused display name
+     * @param mass        mass in kg
+     * @param distance    orbital radius from sun in m
+     * @param visRadius   display radius in px
+     * @param color       display color
+     * @param realRadius  physical radius in m (for collisions and core)
+     */
+    function addPlanet(name, mass, distance, visRadius, color, realRadius) {
+      const x = distance;
+      const y = 0;
+      const v = Math.sqrt(G * sun.mass / distance);
+      const planet = new Body(mass, x, y, 0, v, visRadius, color);
+      planet.name = name;
+      planet.orbitRadius = distance;
+      planet.realRadius = realRadius;
+      planets.push(planet);
+    }
+    // Planets: (mass, orbital distance, display radius, color, physical radius)
+    addPlanet('Mercury', 3.285e23, 5.79e10, 4, '#aaa',    2.44e6);
+    addPlanet('Venus',   4.867e24, 1.082e11, 7, '#ff8800', 6.052e6);
+    addPlanet('Earth',   5.972e24, 1.496e11, 8, '#33aaff', 6.371e6);
+    addPlanet('Mars',    6.39e23,  2.279e11, 6, '#ff5533', 3.389e6);
+    // Add Jupiter
+    addPlanet('Jupiter', 1.898e27, 7.785e11, 15, '#ffcc99', 6.9911e7);
+    // Add Saturn, Uranus, Neptune
+    addPlanet('Saturn',  5.683e26, 1.4335e12, 12, '#ffddaa', 5.8232e7);
+    addPlanet('Uranus',  8.681e25, 2.8725e12, 10, '#aaffff', 2.5362e7);
+    addPlanet('Neptune', 1.024e26, 4.4951e12, 10, '#8888ff', 2.4622e7);
+
+    // Asteroids list
+    const asteroids = [];
+    // Explosions list for collision effects
+    const explosions = [];
+
+    // Mass slider controls for asteroids (mass = 10^exponent kg)
+    const massSlider = document.getElementById('massSlider');
+    const massValue = document.getElementById('massValue');
+    let asteroidMassExp = Number(massSlider.value);
+    let asteroidMass = Math.pow(10, asteroidMassExp);
+    massValue.textContent = asteroidMass.toExponential(2);
+    massSlider.addEventListener('input', () => {
+      asteroidMassExp = Number(massSlider.value);
+      asteroidMass = Math.pow(10, asteroidMassExp);
+      massValue.textContent = asteroidMass.toExponential(2);
+    });
+    // Zoom slider controls (scale = 10^exponent m/pixel)
+    const zoomSlider = document.getElementById('zoomSlider');
+    const zoomValue = document.getElementById('zoomValue');
+    let scaleExp = Number(zoomSlider.value);
+    scale = Math.pow(10, scaleExp);
+    zoomValue.textContent = scale.toExponential(2);
+    zoomSlider.addEventListener('input', () => {
+      scaleExp = Number(zoomSlider.value);
+      scale = Math.pow(10, scaleExp);
+      zoomValue.textContent = scale.toExponential(2);
+    });
+    // Planet gravity factor slider
+    const planetGSlider = document.getElementById('planetGSlider');
+    const planetGValue = document.getElementById('planetGValue');
+    let planetGFactor = Number(planetGSlider.value);
+    planetGValue.textContent = planetGFactor.toFixed(1) + 'x';
+    planetGSlider.addEventListener('input', () => {
+      planetGFactor = Number(planetGSlider.value);
+      planetGValue.textContent = planetGFactor.toFixed(1) + 'x';
+    });
+    // Initial velocity factor slider
+    const velocitySlider = document.getElementById('velocitySlider');
+    const velocityValue = document.getElementById('velocityValue');
+    let velocityFactor = Number(velocitySlider.value) / 100;
+    velocityValue.textContent = velocitySlider.value + '%';
+    velocitySlider.addEventListener('input', () => {
+      velocityFactor = Number(velocitySlider.value) / 100;
+      velocityValue.textContent = velocitySlider.value + '%';
+    });
+    // Sun scale toggle
+    const sunScaleCheckbox = document.getElementById('sunScaleCheckbox');
+    let showSunScale = sunScaleCheckbox.checked;
+    sunScaleCheckbox.addEventListener('change', () => {
+      showSunScale = sunScaleCheckbox.checked;
+    });
+    // Score tracking
+    let score = 0;
+    const scoreDisplay = document.getElementById('scoreValue');
+
+    // Drag controls
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let dragEnd = { x: 0, y: 0 };
+
+    canvas.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      dragStart = { x: e.clientX, y: e.clientY };
+      dragEnd = { ...dragStart };
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      if (isDragging) dragEnd = { x: e.clientX, y: e.clientY };
+    });
+    canvas.addEventListener('mouseup', () => {
+      if (!isDragging) return;
+      isDragging = false;
+      // compute initial position and velocity
+      const sx = (dragStart.x - cx) * scale;
+      const sy = (dragStart.y - cy) * scale;
+      const dx = (dragEnd.x - dragStart.x);
+      const dy = (dragEnd.y - dragStart.y);
+      // apply velocity scaling factor
+      const vx = dx * velocityScale * velocityFactor;
+      const vy = dy * velocityScale * velocityFactor;
+      // create asteroid with orbit tracking and orbit-cross detection
+      const newAst = new Body(asteroidMass, sx, sy, vx, vy, 3, '#fff');
+      newAst.prevAngle = Math.atan2(newAst.y, newAst.x);
+      newAst.angleAcc = 0;
+      newAst.hasCompletedFirstOrbit = false;
+      // track previous sign of distance vs each planet's orbit radius
+      const r0 = Math.sqrt(newAst.x * newAst.x + newAst.y * newAst.y);
+      newAst.prevOrbSign = planets.map(p => (r0 > p.orbitRadius) ? 1 : -1);
+      asteroids.push(newAst);
+    });
+    // Touch support for drag/launch on touchscreens
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      isDragging = true;
+      dragStart = { x: touch.clientX, y: touch.clientY };
+      dragEnd = { ...dragStart };
+    });
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      if (isDragging) dragEnd = { x: touch.clientX, y: touch.clientY };
+    });
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      if (!isDragging) return;
+      isDragging = false;
+      // compute initial position and velocity
+      const sx = (dragStart.x - cx) * scale;
+      const sy = (dragStart.y - cy) * scale;
+      const dx = (dragEnd.x - dragStart.x);
+      const dy = (dragEnd.y - dragStart.y);
+      // apply velocity scaling factor
+      const vx = dx * velocityScale * velocityFactor;
+      const vy = dy * velocityScale * velocityFactor;
+      // create asteroid with orbit tracking and orbit-cross detection
+      const newAst = new Body(asteroidMass, sx, sy, vx, vy, 3, '#fff');
+      newAst.prevAngle = Math.atan2(newAst.y, newAst.x);
+      newAst.angleAcc = 0;
+      newAst.hasCompletedFirstOrbit = false;
+      // track previous sign of distance vs each planet's orbit radius
+      const r0 = Math.sqrt(newAst.x * newAst.x + newAst.y * newAst.y);
+      newAst.prevOrbSign = planets.map(p => (r0 > p.orbitRadius) ? 1 : -1);
+      asteroids.push(newAst);
+    });
+    // Tooltip for planet names on hover
+    const tooltip = document.getElementById('tooltip');
+    canvas.addEventListener('mousemove', (e) => {
+      const mx = e.clientX;
+      const my = e.clientY;
+      let found = false;
+      for (const p of planets) {
+        const px = cx + p.x / scale;
+        const py = cy + p.y / scale;
+        const dx = mx - px;
+        const dy = my - py;
+        if (dx * dx + dy * dy <= p.radius * p.radius) {
+          tooltip.textContent = p.name;
+          tooltip.style.left = (mx + 10) + 'px';
+          tooltip.style.top = (my + 10) + 'px';
+          tooltip.style.display = 'block';
+          found = true;
+          break;
+        }
+      }
+      if (!found) tooltip.style.display = 'none';
+    });
+    canvas.addEventListener('mouseout', () => {
+      tooltip.style.display = 'none';
+    });
+
+    // Simulation loop
+    function update() {
+      // update planets (only sun gravity)
+      for (const p of planets) {
+        const dx = -p.x;
+        const dy = -p.y;
+        const r2 = dx * dx + dy * dy;
+        const r = Math.sqrt(r2);
+        const a = G * sun.mass / r2;
+        p.vx += (dx / r) * a * dt;
+        p.vy += (dy / r) * a * dt;
+      }
+      for (const p of planets) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      // update asteroids (sun and planet gravity)
+      for (const a of asteroids) {
+        let ax = 0, ay = 0;
+        // sun
+        let dx = sun.x - a.x;
+        let dy = sun.y - a.y;
+        let r2 = dx * dx + dy * dy;
+        let r = Math.sqrt(r2);
+        let acc = G * sun.mass / r2;
+        ax += (dx / r) * acc;
+        ay += (dy / r) * acc;
+        // planets
+        for (const p of planets) {
+          dx = p.x - a.x;
+          dy = p.y - a.y;
+          r2 = dx * dx + dy * dy;
+          r = Math.sqrt(r2);
+          // planet gravity with adjustable factor
+          const accp = G * p.mass * planetGFactor / r2;
+          ax += (dx / r) * accp;
+          ay += (dy / r) * accp;
+        }
+        a.vx += ax * dt;
+        a.vy += ay * dt;
+      }
+      for (const a of asteroids) {
+        a.x += a.vx * dt;
+        a.y += a.vy * dt;
+      }
+      // collision and orbit score updates
+      for (let i = asteroids.length - 1; i >= 0; i--) {
+        const a = asteroids[i];
+        // Check collision with planets
+        let collided = false;
+        for (const p of planets) {
+          // collision when asteroid's displayed edge crosses to-scale planet
+          const dxm = a.x - p.x;
+          const dym = a.y - p.y;
+          const dist2m = dxm * dxm + dym * dym;
+          // asteroid's physical radius = visible px radius * scale (m/px)
+          const asteroidPhysR = a.radius * scale;
+          const threshold = p.realRadius + asteroidPhysR;
+          if (dist2m <= threshold * threshold) {
+            // trigger explosion animation on the planet (explosion travels with planet)
+            explosions.push({ body: p, age: 0, maxAge: 60, maxRadius: p.radius * 3 });
+            // remove asteroid and update score (penalize heavily)
+            asteroids.splice(i, 1);
+            score -= 100;
+            scoreDisplay.textContent = score;
+            collided = true;
+            break;
+          }
+        }
+        if (collided) continue;
+        // Orbit detection around sun
+        const TWO_PI = Math.PI * 2;
+        const angle = Math.atan2(a.y, a.x);
+        let delta = angle - a.prevAngle;
+        // normalize delta to [-PI, PI]
+        delta = delta % TWO_PI;
+        if (delta < -Math.PI) delta += TWO_PI;
+        else if (delta > Math.PI) delta -= TWO_PI;
+        a.angleAcc += delta;
+        a.prevAngle = angle;
+        if (Math.abs(a.angleAcc) >= TWO_PI) {
+          // record completion of a full sun orbit
+          if (!a.hasCompletedFirstOrbit) a.hasCompletedFirstOrbit = true;
+          score++;
+          scoreDisplay.textContent = score;
+          a.angleAcc -= Math.sign(a.angleAcc) * TWO_PI;
+        }
+        // after first full orbit, detect crossings of planetary orbits
+        if (a.hasCompletedFirstOrbit) {
+          const r = Math.sqrt(a.x * a.x + a.y * a.y);
+          for (let pi = 0; pi < planets.length; pi++) {
+            const p = planets[pi];
+            const prevSign = a.prevOrbSign[pi];
+            const currSign = (r > p.orbitRadius) ? 1 : -1;
+            if (currSign !== prevSign) {
+              score++;
+              scoreDisplay.textContent = score;
+            }
+            a.prevOrbSign[pi] = currSign;
+          }
+        }
+      }
+    }
+
+    // Drawing loop
+    function draw() {
+      ctx.clearRect(0, 0, width, height);
+      // orbits
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      for (const p of planets) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, p.orbitRadius / scale, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // sun (toggable to-scale display)
+      let sunDispR = showSunScale ? sun.realRadius / scale : sun.radius;
+      sunDispR = Math.max(sunDispR, 1);
+      ctx.fillStyle = sun.color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, sunDispR, 0, Math.PI * 2);
+      ctx.fill();
+      // planets
+      for (const p of planets) {
+        const px = cx + p.x / scale;
+        const py = cy + p.y / scale;
+        // visible planet (translucent)
+        ctx.save();
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(px, py, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        // core: actual to-scale planet radius (min 1px for visibility)
+        const coreR = p.realRadius / scale;
+        const dispCoreR = coreR > 0 ? Math.max(coreR, 1) : 0;
+        if (dispCoreR > 0) {
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(px, py, dispCoreR, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      // asteroids
+      for (const a of asteroids) {
+        const axp = cx + a.x / scale;
+        const ayp = cy + a.y / scale;
+        ctx.fillStyle = a.color;
+        ctx.beginPath();
+        ctx.arc(axp, ayp, a.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // explosions (attached to planets)
+      for (let i = explosions.length - 1; i >= 0; i--) {
+        const exp = explosions[i];
+        const t = exp.age / exp.maxAge;
+        const radius = exp.maxRadius * t;
+        const alpha = 1 - t;
+        // compute current explosion position based on planet's position
+        const ex = cx + exp.body.x / scale;
+        const ey = cy + exp.body.y / scale;
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(255,200,0,${alpha})`;
+        ctx.arc(ex, ey, radius, 0, Math.PI * 2);
+        ctx.fill();
+        exp.age++;
+        if (exp.age >= exp.maxAge) explosions.splice(i, 1);
+      }
+      // drag arrow
+      if (isDragging) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(dragStart.x, dragStart.y);
+        ctx.lineTo(dragEnd.x, dragEnd.y);
+        ctx.stroke();
+      }
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+    loop();
+  </script>
+</body>
+</html>
