@@ -68,6 +68,17 @@
     );
     // Sun physical radius for to-scale display (m)
     sun.realRadius = 6.957e8;
+    // Planet orbital eccentricities (for elliptical orbits)
+    const eccentricities = {
+      'Mercury': 0.2056,
+      'Venus':   0.0068,
+      'Earth':   0.0167,
+      'Mars':    0.0934,
+      'Jupiter': 0.0489,
+      'Saturn':  0.0565,
+      'Uranus':  0.0457,
+      'Neptune': 0.0113
+    };
     const planets = [];
     /**
      * Add a planet to the simulation.
@@ -79,12 +90,18 @@
      * @param realRadius  physical radius in m (for collisions and core)
      */
     function addPlanet(name, mass, distance, visRadius, color, realRadius) {
-      const x = distance;
-      const y = 0;
-      const v = Math.sqrt(G * sun.mass / distance);
-      const planet = new Body(mass, x, y, 0, v, visRadius, color);
+      // distance is semi-major axis (m), use eccentricity for ellipse
+      const a = distance;
+      const e = eccentricities[name] || 0;
+      // start at perihelion position
+      const r0 = a * (1 - e);
+      // velocity at perihelion via vis-viva: v = sqrt(G*M*(1+e)/(a*(1-e)))
+      const v0 = Math.sqrt(G * sun.mass * (1 + e) / (a * (1 - e)));
+      const planet = new Body(mass, r0, 0, 0, v0, visRadius, color);
       planet.name = name;
-      planet.orbitRadius = distance;
+      planet.a = a;
+      planet.e = e;
+      planet.orbitRadius = a;
       planet.realRadius = realRadius;
       planets.push(planet);
     }
@@ -383,11 +400,21 @@
     // Drawing loop
     function draw() {
       ctx.clearRect(0, 0, width, height);
-      // orbits
+      // orbits (elliptical)
       ctx.strokeStyle = 'rgba(255,255,255,0.2)';
       for (const p of planets) {
+        const a_px = p.a / scale;
+        const b_px = a_px * Math.sqrt(1 - p.e * p.e);
+        // ellipse center: focus at sun, center offset by -e*a
+        const centerX = cx - (p.e * p.a) / scale;
+        const centerY = cy;
         ctx.beginPath();
-        ctx.arc(cx, cy, p.orbitRadius / scale, 0, Math.PI * 2);
+        if (ctx.ellipse) {
+          ctx.ellipse(centerX, centerY, a_px, b_px, 0, 0, Math.PI * 2);
+        } else {
+          // fallback: draw circle at radius a_px
+          ctx.arc(cx, cy, a_px, 0, Math.PI * 2);
+        }
         ctx.stroke();
       }
       // sun (toggable to-scale display)
