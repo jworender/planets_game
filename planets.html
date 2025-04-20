@@ -189,40 +189,66 @@
       newAst.prevOrbSign = planets.map(p => (r0 > p.orbitRadius) ? 1 : -1);
       asteroids.push(newAst);
     });
-    // Touch support for drag/launch on touchscreens
+    // Touch support: single-touch drag and pinch-to-zoom
+    let pinchStartDist = null;
+    let pinchStartScaleExp = null;
     canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
-      const touch = e.touches[0];
-      isDragging = true;
-      dragStart = { x: touch.clientX, y: touch.clientY };
-      dragEnd = { ...dragStart };
+      if (e.touches.length === 2) {
+        // begin pinch
+        const t0 = e.touches[0], t1 = e.touches[1];
+        pinchStartDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+        pinchStartScaleExp = scaleExp;
+        isDragging = false;
+      } else if (e.touches.length === 1) {
+        // begin drag
+        const t = e.touches[0];
+        isDragging = true;
+        dragStart = { x: t.clientX, y: t.clientY };
+        dragEnd = { ...dragStart };
+      }
     });
     canvas.addEventListener('touchmove', (e) => {
       e.preventDefault();
-      const touch = e.touches[0];
-      if (isDragging) dragEnd = { x: touch.clientX, y: touch.clientY };
+      if (e.touches.length === 2 && pinchStartDist != null) {
+        // pinch zoom
+        const t0 = e.touches[0], t1 = e.touches[1];
+        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+        const ratio = dist / pinchStartDist;
+        let newExp = pinchStartScaleExp + Math.log10(ratio);
+        newExp = Math.max(Number(zoomSlider.min), Math.min(Number(zoomSlider.max), newExp));
+        scaleExp = newExp;
+        scale = Math.pow(10, scaleExp);
+        zoomSlider.value = scaleExp;
+        zoomValue.textContent = scale.toExponential(2);
+      } else if (e.touches.length === 1 && isDragging) {
+        const t = e.touches[0];
+        dragEnd = { x: t.clientX, y: t.clientY };
+      }
     });
     canvas.addEventListener('touchend', (e) => {
       e.preventDefault();
-      if (!isDragging) return;
-      isDragging = false;
-      // compute initial position and velocity
-      const sx = (dragStart.x - cx) * scale;
-      const sy = (dragStart.y - cy) * scale;
-      const dx = (dragEnd.x - dragStart.x);
-      const dy = (dragEnd.y - dragStart.y);
-      // apply velocity scaling factor
-      const vx = dx * velocityScale * velocityFactor;
-      const vy = dy * velocityScale * velocityFactor;
-      // create asteroid with orbit tracking and orbit-cross detection
-      const newAst = new Body(asteroidMass, sx, sy, vx, vy, 3, '#fff');
-      newAst.prevAngle = Math.atan2(newAst.y, newAst.x);
-      newAst.angleAcc = 0;
-      newAst.hasCompletedFirstOrbit = false;
-      // track previous sign of distance vs each planet's orbit radius
-      const r0 = Math.sqrt(newAst.x * newAst.x + newAst.y * newAst.y);
-      newAst.prevOrbSign = planets.map(p => (r0 > p.orbitRadius) ? 1 : -1);
-      asteroids.push(newAst);
+      // end pinch
+      if (pinchStartDist != null && e.touches.length < 2) {
+        pinchStartDist = null;
+      }
+      // end drag -> launch asteroid
+      if (isDragging && e.touches.length === 0) {
+        isDragging = false;
+        const sx = (dragStart.x - cx) * scale;
+        const sy = (dragStart.y - cy) * scale;
+        const dx = (dragEnd.x - dragStart.x);
+        const dy = (dragEnd.y - dragStart.y);
+        const vx = dx * velocityScale * velocityFactor;
+        const vy = dy * velocityScale * velocityFactor;
+        const newAst = new Body(asteroidMass, sx, sy, vx, vy, 3, '#fff');
+        newAst.prevAngle = Math.atan2(newAst.y, newAst.x);
+        newAst.angleAcc = 0;
+        newAst.hasCompletedFirstOrbit = false;
+        const r0 = Math.hypot(newAst.x, newAst.y);
+        newAst.prevOrbSign = planets.map(p => (r0 > p.orbitRadius) ? 1 : -1);
+        asteroids.push(newAst);
+      }
     });
     // Tooltip for planet names on hover
     const tooltip = document.getElementById('tooltip');
